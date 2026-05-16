@@ -64,6 +64,14 @@ def main():
         )
 
     file_extension = (original_file or path).suffix.lower()
+    if path.is_dir() and not file_extension:
+        if (path / "word").is_dir():
+            file_extension = ".docx"
+        elif (path / "ppt").is_dir():
+            file_extension = ".pptx"
+        elif (path / "xl").is_dir():
+            file_extension = ".xlsx"
+
     assert file_extension in [".docx", ".pptx", ".xlsx"], (
         f"Error: Cannot determine file type from {path}. Use --original or provide a .docx/.pptx/.xlsx file."
     )
