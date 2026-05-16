@@ -41,6 +41,8 @@ _SHIM_SO = Path(tempfile.gettempdir()) / "lo_socket_shim.so"
 
 
 def _needs_shim() -> bool:
+    if not hasattr(socket, "AF_UNIX"):
+        return False
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.close()
@@ -52,6 +54,9 @@ def _needs_shim() -> bool:
 def _ensure_shim() -> Path:
     if _SHIM_SO.exists():
         return _SHIM_SO
+
+    if os.name != "posix":
+        return _SHIM_SO  # Should not be reached but for safety
 
     src = Path(tempfile.gettempdir()) / "lo_socket_shim.c"
     src.write_text(_SHIM_SOURCE)
