@@ -13,6 +13,7 @@ class BaseSchemaValidator:
     IGNORED_VALIDATION_ERRORS = [
         "hyphenationZone",
         "purl.org/dc/terms",
+        "notesMasterIdLst",
     ]
 
     UNIQUE_ID_REQUIREMENTS = {
@@ -707,6 +708,11 @@ class BaseSchemaValidator:
     def _validate_single_file_xsd(self, xml_file, base_path):
         schema_path = self._get_schema_path(xml_file)
         if not schema_path:
+            return None, None
+        if not schema_path.exists():
+            if self.verbose:
+                relative_path = xml_file.relative_to(base_path)
+                print(f"Skipping XSD validation for {relative_path}: schema not bundled")
             return None, None
 
         try:

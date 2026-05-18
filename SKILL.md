@@ -70,7 +70,7 @@ A user may ask you to create, edit, or analyze the contents of an .xlsx file. Yo
 
 ## Important Requirements
 
-**LibreOffice Required for Formula Recalculation**: You can assume LibreOffice is installed for recalculating formula values using the `scripts/recalc.py` script. The script automatically configures LibreOffice on first run, including in sandboxed environments where Unix sockets are restricted (handled by `scripts/office/soffice.py`)
+**Formula Recalculation and Verification**: Use `scripts/recalc.py` after creating or modifying formula workbooks. The script uses LibreOffice when `soffice` is available. If LibreOffice is not installed, it falls back to the Python `formulas` package to evaluate formulas and return structured error details without crashing.
 
 ## Reading and analyzing data
 
@@ -205,7 +205,7 @@ wb.save('modified.xlsx')
 
 ## Recalculating formulas
 
-Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use the provided `scripts/recalc.py` script to recalculate formulas:
+Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use the provided `scripts/recalc.py` script to recalculate formulas with LibreOffice when available, or to evaluate and error-check formulas with the Python fallback when LibreOffice is not available:
 
 ```bash
 python scripts/recalc.py <excel_file> [timeout_seconds]
@@ -217,11 +217,11 @@ python scripts/recalc.py output.xlsx 30
 ```
 
 The script:
-- Automatically sets up LibreOffice macro on first run
-- Recalculates all formulas in all sheets
+- Automatically sets up a LibreOffice macro on first run when `soffice` is installed
+- Recalculates all formulas in all sheets with LibreOffice, or evaluates formulas with Python fallback mode
 - Scans ALL cells for Excel errors (#REF!, #DIV/0!, etc.)
-- Returns JSON with detailed error locations and counts
-- Works on both Linux and macOS
+- Returns JSON with detailed error locations, counts, formula count, and the engine used
+- Works on Windows, Linux, and macOS
 
 ## Formula Verification Checklist
 
