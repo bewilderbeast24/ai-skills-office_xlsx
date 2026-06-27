@@ -1,0 +1,3 @@
+"""
+Office document processing package.
+"""
