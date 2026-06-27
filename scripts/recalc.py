@@ -6,8 +6,11 @@ Recalculates all formulas in an Excel file using LibreOffice
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from office.soffice import get_soffice_env
@@ -28,6 +31,39 @@ RECALCULATE_MACRO = """<?xml version="1.0" encoding="UTF-8"?>
     End Sub
 </script:module>"""
 
+EXCEL_ERRORS = [
+    "#VALUE!",
+    "#DIV/0!",
+    "#REF!",
+    "#NAME?",
+    "#NULL!",
+    "#NUM!",
+    "#N/A",
+]
+
+
+def find_soffice():
+    candidates = []
+    if os.environ.get("SOFFICE"):
+        candidates.append(os.environ["SOFFICE"])
+
+    found = shutil.which("soffice")
+    if found:
+        candidates.append(found)
+
+    if platform.system() == "Windows":
+        candidates.extend(
+            [
+                r"C:\Program Files\LibreOffice\program\soffice.exe",
+                r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
 
 def has_gtimeout():
     try:
@@ -37,7 +73,10 @@ def has_gtimeout():
         return False
 
 
-def setup_libreoffice_macro():
+def setup_libreoffice_macro(soffice_exe):
+    if not soffice_exe:
+        return False
+
     system = platform.system()
     if system == "Darwin":
         macro_dir = os.path.expanduser(MACRO_DIR_MACOS)
@@ -52,12 +91,15 @@ def setup_libreoffice_macro():
         return True
 
     if not os.path.exists(macro_dir):
-        subprocess.run(
-            ["soffice", "--headless", "--terminate_after_init"],
-            capture_output=True,
-            timeout=10,
-            env=get_soffice_env(),
-        )
+        try:
+            subprocess.run(
+                [soffice_exe, "--headless", "--terminate_after_init"],
+                capture_output=True,
+                timeout=10,
+                env=get_soffice_env(),
+            )
+        except FileNotFoundError:
+            return False
         os.makedirs(macro_dir, exist_ok=True)
 
     try:
@@ -72,12 +114,16 @@ def recalc(filename, timeout=30):
         return {"error": f"File {filename} does not exist"}
 
     abs_path = str(Path(filename).absolute())
+    soffice_exe = find_soffice()
 
-    if not setup_libreoffice_macro():
-        return {"error": "Failed to setup LibreOffice macro"}
+    if not setup_libreoffice_macro(soffice_exe):
+        return python_formula_check(
+            filename,
+            "LibreOffice soffice was not found; formulas were evaluated with the Python formulas package without updating cached Excel values.",
+        )
 
     cmd = [
-        "soffice",
+        soffice_exe,
         "--headless",
         "--norestore",
         "vnd.sun.star.script:Standard.Module1.RecalculateAndSave?language=Basic&location=application",
@@ -103,63 +149,89 @@ def recalc(filename, timeout=30):
         return {"error": error_msg}
 
     try:
-        wb = load_workbook(filename, data_only=True)
-
-        excel_errors = [
-            "#VALUE!",
-            "#DIV/0!",
-            "#REF!",
-            "#NAME?",
-            "#NULL!",
-            "#NUM!",
-            "#N/A",
-        ]
-        error_details = {err: [] for err in excel_errors}
-        total_errors = 0
-
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value is not None and isinstance(cell.value, str):
-                        for err in excel_errors:
-                            if err in cell.value:
-                                location = f"{sheet_name}!{cell.coordinate}"
-                                error_details[err].append(location)
-                                total_errors += 1
-                                break
-
-        wb.close()
-
-        result = {
-            "status": "success" if total_errors == 0 else "errors_found",
-            "total_errors": total_errors,
-            "error_summary": {},
-        }
-
-        for err_type, locations in error_details.items():
-            if locations:
-                result["error_summary"][err_type] = {
-                    "count": len(locations),
-                    "locations": locations[:20],
-                }
-
-        wb_formulas = load_workbook(filename, data_only=False)
-        formula_count = 0
-        for sheet_name in wb_formulas.sheetnames:
-            ws = wb_formulas[sheet_name]
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value and isinstance(cell.value, str) and cell.value.startswith("="):
-                        formula_count += 1
-        wb_formulas.close()
-
-        result["total_formulas"] = formula_count
-
+        result = scan_workbook_errors(filename)
+        result["recalculation_engine"] = "libreoffice"
         return result
 
     except Exception as e:
         return {"error": str(e)}
+
+
+def scan_workbook_errors(filename):
+    error_details = {err: [] for err in EXCEL_ERRORS}
+    total_errors = 0
+
+    wb = load_workbook(filename, data_only=True)
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value is not None and isinstance(cell.value, str):
+                    for err in EXCEL_ERRORS:
+                        if err in cell.value:
+                            location = f"{sheet_name}!{cell.coordinate}"
+                            error_details[err].append(location)
+                            total_errors += 1
+                            break
+    wb.close()
+
+    formula_count = count_formulas(filename)
+    result = {
+        "status": "success" if total_errors == 0 else "errors_found",
+        "total_errors": total_errors,
+        "error_summary": {},
+        "total_formulas": formula_count,
+    }
+
+    for err_type, locations in error_details.items():
+        if locations:
+            result["error_summary"][err_type] = {
+                "count": len(locations),
+                "locations": locations[:20],
+            }
+    return result
+
+
+def count_formulas(filename):
+    wb = load_workbook(filename, data_only=False)
+    formula_count = 0
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and isinstance(cell.value, str) and cell.value.startswith("="):
+                    formula_count += 1
+    wb.close()
+    return formula_count
+
+
+def python_formula_check(filename, warning):
+    result = scan_workbook_errors(filename)
+    result["recalculation_engine"] = "python-formulas"
+    result["warning"] = warning
+
+    try:
+        import formulas
+
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            model = formulas.ExcelModel().loads(filename).finish()
+            solution = model.calculate()
+        for address, value in solution.items():
+            text = repr(value)
+            for err in EXCEL_ERRORS:
+                if err in text:
+                    result["error_summary"].setdefault(err, {"count": 0, "locations": []})
+                    result["error_summary"][err]["count"] += 1
+                    if len(result["error_summary"][err]["locations"]) < 20:
+                        result["error_summary"][err]["locations"].append(str(address))
+                    result["total_errors"] += 1
+        result["status"] = "success" if result["total_errors"] == 0 else "errors_found"
+        result["evaluated_formulas"] = result["total_formulas"]
+    except Exception as e:
+        result["status"] = "verification_incomplete"
+        result["formula_evaluation_error"] = str(e)
+
+    return result
 
 
 def main():
